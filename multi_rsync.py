@@ -6,6 +6,7 @@ import logging
 import time
 import random
 import getopt
+import hashlib
 import concurrent.futures
 from concurrent.futures.thread import ThreadPoolExecutor
 
@@ -21,26 +22,31 @@ def get_logger():
     return logger
 
 
+def get_sha256_str(content):
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
 def single_rsync(local_path, remote_dir_path, remote_addr, remote_ssh_opt, rsync_opts):
     call_args = ["rsync", "-e", remote_ssh_opt] + rsync_opts + [local_path, "{}:{}/".format(remote_addr, remote_dir_path)]
     print(call_args)
 
-    while True:    
+    while True:
         try:
-            time.sleep(0.5 + random.randint(50, 300) / 100)
-
+            time.sleep(3 + random.randint(0, 40) / 10)  # 3 to 7 sec
             subprocess.check_call(call_args)
             break
         except subprocess.CalledProcessError:
             print(traceback.format_exc())
-            print('rsync exit unexpectedly, restart...')
+            sleep_time = 15 + random.randint(0, 150) / 10  # 15 to 30 sec
+            print('rsync exit unexpectedly, restart in {} seconds...'.format(sleep_time))
+            time.sleep(sleep_time)
 
 
 def multi_rsync(ssh_username, ssh_host, local_dir, remote_dir, ssh_port=22, rsync_timeout=90, max_workers=25, check_interval=5):
     logger = get_logger()
     remote_addr = "{}@{}".format(ssh_username, ssh_host)
     remote_ssh_opt = "ssh -p {}".format(ssh_port)
-    rsync_transfer_opts = ['-a', '-v', '-z', '--protect-args', '--append', '--inplace', '--partial', '--progress', '--stats', '--timeout={}'.format(rsync_timeout)]
+    rsync_transfer_opts = ('-a', '-v', '--protect-args', '--partial', '--progress', '--stats', '--timeout={}'.format(rsync_timeout))
 
     logger.info("syncing directories...")
     subprocess.check_call(["rsync", "-a", "-e", remote_ssh_opt, "-f", "+ */", "-f", "- *", local_dir, "{}:{}/".format(remote_addr, remote_dir)])
@@ -54,8 +60,11 @@ def multi_rsync(ssh_username, ssh_host, local_dir, remote_dir, ssh_port=22, rsyn
 
         for filename in files:
             full_path = os.path.join(root, filename)
+            filename_hash = get_sha256_str(filename)
+            current_rsync_transfer_opts = list(rsync_transfer_opts) + ['--partial-dir=.rsync-part-{}'.format(filename_hash)]
+
             logger.info("Submitting: {}".format(full_path))
-            t = pool.submit(single_rsync, full_path, remote_root, remote_addr, remote_ssh_opt, rsync_transfer_opts)
+            t = pool.submit(single_rsync, full_path, remote_root, remote_addr, remote_ssh_opt, current_rsync_transfer_opts)
             tasks.append(t)
             logger.info("{} tasks submitted.".format(len(tasks)))
 
